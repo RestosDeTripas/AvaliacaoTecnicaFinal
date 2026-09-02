@@ -1,0 +1,15 @@
+const sqlite3 = require('sqlite3').verbose();
+const path = require('path');
+const fs = require('fs');
+const { DATABASE_FILE } = require('./config/env');
+const file = path.resolve(__dirname, '..', DATABASE_FILE);
+fs.mkdirSync(path.dirname(file), { recursive: true });
+const connection = new sqlite3.Database(file);
+connection.serialize(() => connection.run('PRAGMA foreign_keys = ON'));
+const run = (sql, params = []) => new Promise((resolve, reject) => connection.run(sql, params, function (error) { error ? reject(error) : resolve({ lastID: this.lastID, changes: this.changes }); }));
+const get = (sql, params = []) => new Promise((resolve, reject) => connection.get(sql, params, (error, row) => error ? reject(error) : resolve(row)));
+const all = (sql, params = []) => new Promise((resolve, reject) => connection.all(sql, params, (error, rows) => error ? reject(error) : resolve(rows)));
+run(`CREATE TABLE IF NOT EXISTS Usuarios (id INTEGER PRIMARY KEY AUTOINCREMENT, nome TEXT NOT NULL, email TEXT NOT NULL UNIQUE, senha TEXT NOT NULL)`);
+run(`CREATE TABLE IF NOT EXISTS Disciplinas (id INTEGER PRIMARY KEY AUTOINCREMENT, nome TEXT NOT NULL, peso_avaliacao INTEGER NOT NULL CHECK (peso_avaliacao BETWEEN 1 AND 5), usuario_id INTEGER NOT NULL, FOREIGN KEY (usuario_id) REFERENCES Usuarios(id) ON DELETE CASCADE)`);
+run(`CREATE TABLE IF NOT EXISTS Tarefas (id INTEGER PRIMARY KEY AUTOINCREMENT, titulo TEXT NOT NULL, descricao TEXT DEFAULT '', data_entrega TEXT NOT NULL, peso_avaliacao INTEGER NOT NULL CHECK (peso_avaliacao BETWEEN 1 AND 5), status TEXT NOT NULL DEFAULT 'Pendente' CHECK (status IN ('Pendente', 'Concluída')), disciplina_id INTEGER NOT NULL, usuario_id INTEGER NOT NULL, FOREIGN KEY (disciplina_id) REFERENCES Disciplinas(id) ON DELETE CASCADE, FOREIGN KEY (usuario_id) REFERENCES Usuarios(id) ON DELETE CASCADE)`);
+module.exports = { run, get, all };

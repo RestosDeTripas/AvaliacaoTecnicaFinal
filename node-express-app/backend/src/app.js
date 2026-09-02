@@ -7,8 +7,9 @@ const app = express();
 // Middleware
 app.use(cors());
 app.use(express.json());
+app.use(cors());
 
 // Routes
-app.use('/api', routes());
+app.use('/api', routes);
 
 module.exports = app;
