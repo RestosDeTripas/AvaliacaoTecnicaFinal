@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node backend/src/server.js",
     "dev": "nodemon backend/src/server.js",
-    "test": "node backend/src/test-api.js"
+    "test": "node backend/src/test-prioridade.js"
   },
   "dependencies": {
     "express": "^4.17.1",

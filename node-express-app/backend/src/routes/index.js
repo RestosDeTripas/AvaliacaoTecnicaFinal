@@ -3,6 +3,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const db = require('../database');
 const { JWT_SECRET } = require('../config/env');
+const { calcularPrioridade, validarData, validarPeso } = require('../prioridade');
 
 const router = express.Router();
 
@@ -11,6 +12,12 @@ const auth = (req, res, next) => {
     const token = (req.headers.authorization || '').replace('Bearer ', '');
     try { req.user = jwt.verify(token, JWT_SECRET); next(); }
     catch { res.status(401).json({ error: 'Token inválido ou ausente.' }); }
+};
+
+const incluirPrioridade = (tarefa) => {
+    if (!tarefa) return tarefa;
+    const prioridade = tarefa.status === 'Concluída' ? 0 : calcularPrioridade(tarefa.data_entrega, tarefa.peso_avaliacao);
+    return { ...tarefa, prioridade };
 };
 
 router.get('/health', (req, res) => {
@@ -44,28 +51,89 @@ router.post('/disciplinas', auth, async (req, res) => {
 });
 
 router.get('/tarefas', auth, async (req, res) => {
-    const tarefas = await db.all(`SELECT t.*, d.nome AS disciplina_nome, d.peso_avaliacao,
-        ROUND((d.peso_avaliacao * 100.0) / MAX(1, (julianday(t.data_entrega) - julianday('now') + 1)), 2) AS prioridade
-        FROM Tarefas t JOIN Disciplinas d ON d.id = t.disciplina_id
-        WHERE t.usuario_id = ? ORDER BY prioridade DESC, t.data_entrega ASC`, [req.user.id]);
-    res.json(tarefas);
+    try {
+        const tarefas = await db.all(`SELECT t.*, d.nome AS disciplina_nome
+            FROM Tarefas t
+            JOIN Disciplinas d ON d.id = t.disciplina_id
+            WHERE t.usuario_id = ?`, [req.user.id]);
+
+        const tarefasComPrioridade = tarefas
+            .map(incluirPrioridade)
+            .sort((a, b) => (b.prioridade - a.prioridade) || a.data_entrega.localeCompare(b.data_entrega));
+
+        res.json(tarefasComPrioridade);
+    } catch (error) {
+        res.status(400).json({ error: error.message || 'Não foi possível carregar as tarefas.' });
+    }
 });
+
 router.post('/tarefas', auth, async (req, res) => {
-    const titulo = clean(req.body.titulo, 150); const descricao = clean(req.body.descricao, 1000); const data = clean(req.body.data_entrega, 10); const disciplinaId = Number(req.body.disciplina_id);
-    if (!titulo || !/^\d{4}-\d{2}-\d{2}$/.test(data) || !Number.isInteger(disciplinaId)) return res.status(400).json({ error: 'Título, data de entrega e disciplina são obrigatórios.' });
-    const disciplina = await db.get('SELECT id FROM Disciplinas WHERE id = ? AND usuario_id = ?', [disciplinaId, req.user.id]);
-    if (!disciplina) return res.status(400).json({ error: 'Disciplina inválida.' });
-    const result = await db.run('INSERT INTO Tarefas (titulo, descricao, data_entrega, peso_avaliacao, status, disciplina_id, usuario_id) VALUES (?, ?, ?, (SELECT peso_avaliacao FROM Disciplinas WHERE id = ?), ?, ?, ?)', [titulo, descricao, data, disciplinaId, req.body.status === 'Concluída' ? 'Concluída' : 'Pendente', disciplinaId, req.user.id]);
-    res.status(201).json(await db.get('SELECT * FROM Tarefas WHERE id = ?', [result.lastID]));
+    try {
+        const titulo = clean(req.body.titulo, 150);
+        const descricao = clean(req.body.descricao, 1000);
+        const data = clean(req.body.data_entrega ?? req.body.data, 10);
+        const peso = Number(req.body.peso_avaliacao ?? req.body.peso);
+        const disciplinaId = Number(req.body.disciplina_id);
+
+        if (!titulo) return res.status(400).json({ error: 'Título é obrigatório.' });
+        validarData(data);
+        const pesoValido = validarPeso(peso);
+
+        if (!Number.isInteger(disciplinaId)) return res.status(400).json({ error: 'Disciplina inválida.' });
+
+        const disciplina = await db.get('SELECT id FROM Disciplinas WHERE id = ? AND usuario_id = ?', [disciplinaId, req.user.id]);
+        if (!disciplina) return res.status(400).json({ error: 'Disciplina inválida.' });
+
+        const status = req.body.status === 'Concluída' ? 'Concluída' : 'Pendente';
+        const result = await db.run(
+            'INSERT INTO Tarefas (titulo, descricao, data_entrega, peso_avaliacao, status, disciplina_id, usuario_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            [titulo, descricao, data, pesoValido, status, disciplinaId, req.user.id]
+        );
+
+        const tarefaCriada = await db.get('SELECT * FROM Tarefas WHERE id = ?', [result.lastID]);
+        res.status(201).json(incluirPrioridade(tarefaCriada));
+    } catch (error) {
+        res.status(400).json({ error: error.message || 'Erro ao criar tarefa.' });
+    }
 });
+
 router.put('/tarefas/:id', auth, async (req, res) => {
-    const id = Number(req.params.id); const atual = await db.get('SELECT * FROM Tarefas WHERE id = ? AND usuario_id = ?', [id, req.user.id]);
-    if (!atual) return res.status(404).json({ error: 'Tarefa não encontrada.' });
-    const titulo = clean(req.body.titulo ?? atual.titulo, 150); const descricao = clean(req.body.descricao ?? atual.descricao, 1000); const data = clean(req.body.data_entrega ?? atual.data_entrega, 10); const status = req.body.status === 'Concluída' || (req.body.status === undefined && atual.status === 'Pendente') ? (req.body.status === undefined ? 'Concluída' : req.body.status) : 'Pendente';
-    if (!titulo || !/^\d{4}-\d{2}-\d{2}$/.test(data)) return res.status(400).json({ error: 'Dados da tarefa inválidos.' });
-    await db.run('UPDATE Tarefas SET titulo = ?, descricao = ?, data_entrega = ?, status = ? WHERE id = ? AND usuario_id = ?', [titulo, descricao, data, status, id, req.user.id]);
-    res.json(await db.get('SELECT * FROM Tarefas WHERE id = ?', [id]));
+    try {
+        const id = Number(req.params.id);
+        const atual = await db.get('SELECT * FROM Tarefas WHERE id = ? AND usuario_id = ?', [id, req.user.id]);
+        if (!atual) return res.status(404).json({ error: 'Tarefa não encontrada.' });
+
+        const titulo = clean(req.body.titulo ?? atual.titulo, 150);
+        const descricao = clean(req.body.descricao ?? atual.descricao, 1000);
+        const data = clean(req.body.data_entrega ?? req.body.data ?? atual.data_entrega, 10);
+        const peso = Number(req.body.peso_avaliacao ?? req.body.peso ?? atual.peso_avaliacao);
+        const disciplinaId = Number(req.body.disciplina_id ?? atual.disciplina_id);
+        const status = req.body.status === 'Concluída' ? 'Concluída' : req.body.status === 'Pendente' ? 'Pendente' : atual.status;
+
+        if (!titulo) return res.status(400).json({ error: 'Título é obrigatório.' });
+        validarData(data);
+        const pesoValido = validarPeso(peso);
+
+        if (!Number.isInteger(disciplinaId)) return res.status(400).json({ error: 'Disciplina inválida.' });
+        const disciplina = await db.get('SELECT id FROM Disciplinas WHERE id = ? AND usuario_id = ?', [disciplinaId, req.user.id]);
+        if (!disciplina) return res.status(400).json({ error: 'Disciplina inválida.' });
+
+        await db.run(
+            'UPDATE Tarefas SET titulo = ?, descricao = ?, data_entrega = ?, peso_avaliacao = ?, status = ?, disciplina_id = ? WHERE id = ? AND usuario_id = ?',
+            [titulo, descricao, data, pesoValido, status, disciplinaId, id, req.user.id]
+        );
+
+        const tarefaAtualizada = await db.get('SELECT * FROM Tarefas WHERE id = ?', [id]);
+        res.json(incluirPrioridade(tarefaAtualizada));
+    } catch (error) {
+        res.status(400).json({ error: error.message || 'Erro ao atualizar tarefa.' });
+    }
 });
-router.delete('/tarefas/:id', auth, async (req, res) => { const result = await db.run('DELETE FROM Tarefas WHERE id = ? AND usuario_id = ?', [Number(req.params.id), req.user.id]); if (!result.changes) return res.status(404).json({ error: 'Tarefa não encontrada.' }); res.status(204).send(); });
+
+router.delete('/tarefas/:id', auth, async (req, res) => {
+    const result = await db.run('DELETE FROM Tarefas WHERE id = ? AND usuario_id = ?', [Number(req.params.id), req.user.id]);
+    if (!result.changes) return res.status(404).json({ error: 'Tarefa não encontrada.' });
+    res.status(204).send();
+});
 
 module.exports = router;
