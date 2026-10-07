@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "React frontend for the task manager",
   "private": true,
+  "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
